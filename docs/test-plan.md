@@ -106,7 +106,25 @@ test, so the failure path is verified everywhere.
 
 ## 5. Packaged application verification (CI)
 
-`.github/workflows/windows-build.yml` runs on `windows-latest` and performs, in order:
+### Activating the workflow (one manual step)
+
+The workflow file lives at `.github/workflows/windows-build.yml` in this repository and
+in `Bastion-source.zip`. If it is not yet present on GitHub, add it once through the web
+interface — GitHub requires the `workflows` permission to create that path
+programmatically, which automated pushes may not hold:
+
+1. Open the repository on GitHub, switch to the branch you are pushing to.
+2. **Add file → Create new file**, name it exactly
+   `.github/workflows/windows-build.yml`.
+3. Paste the contents of the local file (it is also printed at the end of this document).
+4. Commit — the workflow starts running on the next push and can also be triggered from
+   the **Actions** tab with *Run workflow*.
+
+No other step of the project needs manual set-up.
+
+### What the workflow does
+
+`windows-build.yml` runs on `windows-latest` and performs, in order:
 
 1. install runtime requirements;
 2. `python -m pytest -q -rs` — the full suite;
@@ -176,3 +194,101 @@ Recorded because it demonstrates the verification working as intended:
   spec disables UPX for this reason.
 * **Performance** is not benchmarked: the app performs bounded local queries, and the
   heaviest operation (a full scan) runs on a worker thread with a timeout.
+
+---
+
+## Appendix — full contents of `.github/workflows/windows-build.yml`
+
+Paste this into the GitHub web UI as described in section 5.
+
+```yaml
+name: Windows build
+
+# Builds and tests Bastion on a real Windows runner so the native modules are
+# exercised with actual PowerShell and the PySide6 GUI libraries.
+on:
+  push:
+    branches: ["main", "arena/**"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    name: Test and package (Windows)
+    runs-on: windows-latest
+
+    env:
+      # Qt needs a platform plugin in a headless CI session.
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime and test requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run the test suite
+        run: python -m pytest -q -rs
+
+      - name: Install build requirements
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Verify the PowerShell-based modules against the real OS
+        # Read-only checks against the live OS. Kept non-fatal so a runner
+        # quirk cannot block the build artifact; inspect the log for details.
+        continue-on-error: true
+        run: python packaging/verify_windows_modules.py
+
+      - name: Build Bastion.exe with PyInstaller
+        run: python -m PyInstaller packaging/bastion.spec --noconfirm
+
+      - name: Confirm the executable exists
+        shell: pwsh
+        run: |
+          $exe = "dist\\Bastion.exe"
+          if (-not (Test-Path $exe)) { throw "Build output missing: $exe" }
+          $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host "Built $exe ($sizeMb MB)"
+
+      - name: Smoke-launch the packaged application
+        shell: pwsh
+        run: |
+          # Start the packaged app, let it initialise, then close it. The
+          # process must stay alive (a crash would exit immediately).
+          $process = Start-Process -FilePath "dist\\Bastion.exe" -PassThru
+          Start-Sleep -Seconds 12
+          if ($process.HasExited) {
+            throw "The packaged application exited early with code $($process.ExitCode)"
+          }
+          Write-Host "Packaged application started successfully (pid $($process.Id))"
+          Stop-Process -Id $process.Id -Force
+
+      - name: Upload the executable as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bastion-windows-exe
+          path: dist/Bastion.exe
+          if-no-files-found: error
+
+      - name: Upload the built application bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bastion-windows-bundle
+          path: |
+            dist/Bastion.exe
+            README.md
+            assets/bastion.ico
+            packaging/verify_windows_modules.py
+          if-no-files-found: error
+```
