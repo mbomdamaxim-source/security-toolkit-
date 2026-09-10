@@ -1,0 +1,4 @@
+# Build-time dependencies (packaging only - not needed to run from source).
+# Keep pinned; update deliberately and re-test the packaging block.
+pyinstaller==6.11.1
+Pillow==12.3.0
